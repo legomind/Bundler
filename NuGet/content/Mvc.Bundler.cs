@@ -264,7 +264,7 @@ namespace ServiceStack.Mvc
 				var scripts = new StringBuilder();
 				foreach (var file in jsFiles)
 				{
-					var jsFile = file.Trim().Replace(".coffee", ".js");
+					var jsFile = file.Trim().Replace(".coffee", ".js").Replace(".ls", ".js");
 					var jsSrc = Path.Combine(baseUrl, jsFile);
 					
 					if (IsInvalidFileName(jsFile)) 
@@ -303,7 +303,7 @@ namespace ServiceStack.Mvc
 				var styles = new StringBuilder();
 				foreach (var file in cssFiles)
 				{
-					var cssFile = file.Trim().Replace(".less", ".css");
+					var cssFile = file.Trim().Replace(".less", ".css").Replace(".styl", ".css");
 					var cssSrc = Path.Combine(baseUrl, cssFile);
 
 					if (IsInvalidFileName(cssFile)) 
