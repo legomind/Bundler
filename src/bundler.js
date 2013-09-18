@@ -71,11 +71,11 @@ var fs = require("fs"),
     jsp = require("uglify-js").parser,
     pro = require("uglify-js").uglify,
     less = require('less'),
-    sass = require('sass'),
+    sass = require('node-sass'),
 	stylus = require('stylus'),
 	nib = require('nib'),
     coffee = require('coffee-script'),
-	livescript = require('livescript'),
+    livescript = require('livescript'),
     cleanCss = require('clean-css'),
     Step = require('step'),
     startedAt = Date.now();
@@ -161,7 +161,7 @@ function scanDir(allFiles, cb) {
                         var recursive = options.folder === 'recursive';
                         jsFiles = allFiles.map(function jsMatches(fileName) {
                             if (!fileName.startsWith(bundleDir)) return '#';
-                            if (!fileName.endsWithAny(['.js', '.coffee', '.ls'])) return '#';
+                            if (!fileName.endsWithAny(['.js', '.coffee', '.ls', '.ts'])) return '#';
                             if (fileName.endsWithAny(['.min.js'])) return '#';
                             if (!recursive && (path.dirname(fileName) !== bundleDir)) return '#';
                             return fileName.substring(bundleDir.length + 1);
@@ -252,15 +252,17 @@ function processJsBundle(options, jsBundle, bundleDir, jsFiles, bundleName, cb) 
             || file.startsWith('#'))
             return;
 
-        var isCoffee = file.endsWith(".coffee"), isLivescript = file.endsWith(".ls"), jsFile = isCoffee
-                ? file.replace(".coffee", ".js")
-				: isLivescript
-					? file.replace(".ls", ".js")
-					: file;
+        var isCoffee = file.endsWith(".coffee");
+        var isLiveScript = file.endsWith(".ls");
+        var jsFile = isCoffee ?
+            file.replace(".coffee", ".js")
+    		: isLiveScript ?
+            file.replace(".ls", ".js") :
+            file;
 
         var filePath = path.join(bundleDir, file),
-                jsPath = path.join(bundleDir, jsFile),
-                minJsPath = getMinFileName(jsPath);
+              jsPath = path.join(bundleDir, jsFile),
+           minJsPath = getMinFileName(jsPath);
 
         var i = index++;
         pending++;
@@ -271,10 +273,10 @@ function processJsBundle(options, jsBundle, bundleDir, jsFiles, bundleName, cb) 
                     readTextFile(filePath, function (coffee) {
                         getOrCreateJs(options, coffee, filePath, jsPath, next);
                     });
-				} else if(isLivescript){
-					readTextFile(filePath, function(livescriptText){
-						getOrCreateJsLivescript(options, livescriptText, filePath, jsPath, next);
-					});
+                } else if(isLiveScript){
+                    readTextFile(filePath, function(livescriptText){
+                        getOrCreateJsLiveScript(options, livescriptText, filePath, jsPath, next);
+                    });
                 } else {
                     readTextFile(jsPath, next);
                 }
@@ -337,18 +339,20 @@ function processCssBundle(options, cssBundle, bundleDir, cssFiles, bundleName, c
             || file.startsWith('#'))
             return;
 
-        var isLess = file.endsWith(".less"), isSass = (file.endsWith(".sass") || file.endsWith(".scss")), isStylus = file.endsWith(".styl"), 
-            cssFile = isLess
-                ? file.replace(".less", ".css")
-                : isSass
-                    ? file.replace(".sass", ".css").replace(".scss", ".css")
-                    :isStylus
-						? file.replace(".styl", ".css")
-						: file;
+        var isLess = file.endsWith(".less");
+        var isSass = (file.endsWith(".sass") || file.endsWith(".scss"));
+        var isStylus = file.endsWith(".styl");
+        var cssFile = isLess ?
+            file.replace(".less", ".css")
+            : isSass ?
+            file.replace(".sass", ".css").replace(".scss", ".css")
+            : isStylus ?
+            file.replace(".styl", ".css") :
+            file;
 
         var filePath = path.join(bundleDir, file),
-                cssPath = path.join(bundleDir, cssFile),
-                minCssPath = getMinFileName(cssPath);
+             cssPath = path.join(bundleDir, cssFile),
+          minCssPath = getMinFileName(cssPath);
 
         var i = index++;
         pending++;
@@ -396,7 +400,7 @@ function getOrCreateJs(options, coffeeScript, csPath, jsPath, cb /*cb(js)*/) {
         }, coffeeScript, csPath, jsPath, cb);
 }
 
-function getOrCreateJsLivescript(options, livescriptText, lsPath, jsPath, cb /*cb(js)*/) {
+function getOrCreateJsLiveScript(options, livescriptText, lsPath, jsPath, cb /*cb(js)*/) {
     compileAsync(options, "compiling", function (livescriptText, lsPath, cb) {
             cb(livescript.compile(livescriptText));
         }, livescriptText, lsPath, jsPath, cb);
@@ -413,8 +417,20 @@ function getOrCreateLessCss(options, less, lessPath, cssPath, cb /*cb(css)*/) {
 }
 
 function getOrCreateSassCss(options, sassText, sassPath, cssPath, cb /*cb(sass)*/) {
+    var explodedSassPath = sassPath.split('\\');
+
+    if (explodedSassPath.length == 0) {
+        explodedSassPath = sassPath.split('/');
+    }
+
+    var sassFileName = explodedSassPath.pop();
+    var includePaths = [sassPath.replace(sassFileName, '')];
+
     compileAsync(options, "compiling", function (sassText, sassPath, cb) {
-        cb(sass.render(removeCR(sassText), { options: path.basename(sassPath) }));
+        cb(sass.renderSync({
+            file: sassPath,
+            includePaths: includePaths
+        }));
     }, sassText, sassPath, cssPath, cb);
 }
 
@@ -427,7 +443,7 @@ function getOrCreateStylusCss(options, stylusText, stylusPath, cssPath, cb /*cb(
 				if(err){
 					throw new Error(err);
 				}
-				
+
 				cb(css);
 			});
     }, stylusText, stylusPath, cssPath, cb);

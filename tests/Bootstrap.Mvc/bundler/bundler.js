@@ -71,8 +71,11 @@ var fs = require("fs"),
     jsp = require("uglify-js").parser,
     pro = require("uglify-js").uglify,
     less = require('less'),
-    sass = require('sass'),
+    sass = require('node-sass'),
+	stylus = require('stylus'),
+	nib = require('nib'),
     coffee = require('coffee-script'),
+    livescript = require('livescript'),
     cleanCss = require('clean-css'),
     Step = require('step'),
     startedAt = Date.now();
@@ -148,7 +151,7 @@ function scanDir(allFiles, cb) {
                     next();
             };
             function processBundle(jsBundle) {
-                var bundleDir = path.dirname(jsBundle); 
+                var bundleDir = path.dirname(jsBundle);
                 var bundleName = jsBundle.replace('.bundle', '');
                 readTextFile(jsBundle, function (data) {
                     var jsFiles = removeCR(data).split("\n");
@@ -158,7 +161,7 @@ function scanDir(allFiles, cb) {
                         var recursive = options.folder === 'recursive';
                         jsFiles = allFiles.map(function jsMatches(fileName) {
                             if (!fileName.startsWith(bundleDir)) return '#';
-                            if (!fileName.endsWithAny(['.js', '.coffee'])) return '#';
+                            if (!fileName.endsWithAny(['.js', '.coffee', '.ls', '.ts'])) return '#';
                             if (fileName.endsWithAny(['.min.js'])) return '#';
                             if (!recursive && (path.dirname(fileName) !== bundleDir)) return '#';
                             return fileName.substring(bundleDir.length + 1);
@@ -189,7 +192,7 @@ function scanDir(allFiles, cb) {
                         var recursive = options.folder === 'recursive';
                         cssFiles = allFiles.map(function cssMatches(fileName) {
                             if (!fileName.startsWith(bundleDir)) return '#';
-                            if (!fileName.endsWithAny(['.css', '.less', '.sass', '.scss'])) return '#';
+                            if (!fileName.endsWithAny(['.css', '.less', '.sass', '.scss', '.styl'])) return '#';
                             if (fileName.endsWithAny(['.min.css'])) return '#';
                             if (!recursive && (path.dirname(fileName) !== bundleDir)) return '#';
                             return fileName.substring(bundleDir.length + 1);
@@ -231,27 +234,35 @@ function processJsBundle(options, jsBundle, bundleDir, jsFiles, bundleName, cb) 
             allMinJs += ";" + allMinJsArr[i] + "\n";
         }
 
-        var afterBundle = options.skipmin ? cb : function (_) { 
+        var afterBundle = options.skipmin ? cb : function (_) {
             var minFileName = getMinFileName(bundleName);
-            fs.writeFile(minFileName, allMinJs, cb); 
+            fs.writeFile(minFileName, allMinJs, cb);
         };
-        fs.writeFile(bundleName, allJs, afterBundle);
+        if (!options.bundleminonly) {
+            fs.writeFile(bundleName, allJs, afterBundle);
+        } else {
+            afterBundle();
+        }
     };
 
     jsFiles.forEach(function (file) {
         // Skip blank lines/files beginning with '.' or '#', but allow ../relative paths
-        if (!(file = file.trim()) 
+        if (!(file = file.trim())
             || (file.startsWith(".") && !file.startsWith(".."))
-            || file.startsWith('#')) 
-            return; 
+            || file.startsWith('#'))
+            return;
 
-        var isCoffee = file.endsWith(".coffee"), jsFile = isCoffee
-                ? file.replace(".coffee", ".js")
-                : file;
+        var isCoffee = file.endsWith(".coffee");
+        var isLiveScript = file.endsWith(".ls");
+        var jsFile = isCoffee ?
+            file.replace(".coffee", ".js")
+    		: isLiveScript ?
+            file.replace(".ls", ".js") :
+            file;
 
         var filePath = path.join(bundleDir, file),
-                jsPath = path.join(bundleDir, jsFile),
-                minJsPath = getMinFileName(jsPath);
+              jsPath = path.join(bundleDir, jsFile),
+           minJsPath = getMinFileName(jsPath);
 
         var i = index++;
         pending++;
@@ -260,7 +271,11 @@ function processJsBundle(options, jsBundle, bundleDir, jsFiles, bundleName, cb) 
                 var next = this;
                 if (isCoffee) {
                     readTextFile(filePath, function (coffee) {
-                        getOrCreateJs(coffee, filePath, jsPath, next);
+                        getOrCreateJs(options, coffee, filePath, jsPath, next);
+                    });
+                } else if(isLiveScript){
+                    readTextFile(filePath, function(livescriptText){
+                        getOrCreateJsLiveScript(options, livescriptText, filePath, jsPath, next);
                     });
                 } else {
                     readTextFile(jsPath, next);
@@ -270,12 +285,15 @@ function processJsBundle(options, jsBundle, bundleDir, jsFiles, bundleName, cb) 
                 allJsArr[i] = js;
                 var withMin = function (minJs) {
                     allMinJsArr[i] = minJs;
+
                     if (! --pending) whenDone();
                 };
                 if (options.skipmin) {
                     withMin('');
-                } else {
-                    getOrCreateMinJs(js, jsPath, minJsPath, withMin);
+                } else if (/(\.min\.|\.pack\.)/.test(file) && options.skipremin) {
+                    readTextFile(jsPath, withMin);
+                }  else {
+                    getOrCreateMinJs(options, js, jsPath, minJsPath, withMin);
                 }
             }
         );
@@ -303,29 +321,38 @@ function processCssBundle(options, cssBundle, bundleDir, cssFiles, bundleName, c
             allMinCss += allMinCssArr[i] + "\n";
         }
 
-        var afterBundle = options.skipmin ? cb : function (_) { 
+        var afterBundle = options.skipmin ? cb : function (_) {
             var minFileName = getMinFileName(bundleName);
-            fs.writeFile(minFileName, allMinCss, cb); 
+            fs.writeFile(minFileName, allMinCss, cb);
         };
-        fs.writeFile(bundleName, allCss, afterBundle);
+
+        if (!options.bundleminonly) {
+            fs.writeFile(bundleName, allCss, afterBundle);
+        } else {
+            afterBundle();
+        }
     };
 
     cssFiles.forEach(function (file) {
-        if (!(file = file.trim()) 
+        if (!(file = file.trim())
             || (file.startsWith(".") && !file.startsWith(".."))
-            || file.startsWith('#')) 
-            return; 
+            || file.startsWith('#'))
+            return;
 
-        var isLess = file.endsWith(".less"), isSass = (file.endsWith(".sass") || file.endsWith(".scss")),
-            cssFile = isLess
-                ? file.replace(".less", ".css")
-                : isSass 
-                    ? file.replace(".sass", ".css").replace(".scss", ".css")
-                    : file;
+        var isLess = file.endsWith(".less");
+        var isSass = (file.endsWith(".sass") || file.endsWith(".scss"));
+        var isStylus = file.endsWith(".styl");
+        var cssFile = isLess ?
+            file.replace(".less", ".css")
+            : isSass ?
+            file.replace(".sass", ".css").replace(".scss", ".css")
+            : isStylus ?
+            file.replace(".styl", ".css") :
+            file;
 
         var filePath = path.join(bundleDir, file),
-                cssPath = path.join(bundleDir, cssFile),
-                minCssPath = getMinFileName(cssPath);
+             cssPath = path.join(bundleDir, cssFile),
+          minCssPath = getMinFileName(cssPath);
 
         var i = index++;
         pending++;
@@ -334,12 +361,16 @@ function processCssBundle(options, cssBundle, bundleDir, cssFiles, bundleName, c
                 var next = this;
                 if (isLess) {
                     readTextFile(filePath, function (lessText) {
-                        getOrCreateLessCss(lessText, filePath, cssPath, next);
+                        getOrCreateLessCss(options, lessText, filePath, cssPath, next);
                     });
                 } else if (isSass) {
                     readTextFile(filePath, function (sassText) {
-                        getOrCreateSassCss(sassText, filePath, cssPath, next);
+                        getOrCreateSassCss(options, sassText, filePath, cssPath, next);
                     });
+				} else if (isStylus){
+					readTextFile(filePath, function (stylusText) {
+						getOrCreateStylusCss(options, stylusText, filePath, cssPath, next);
+					});
                 } else {
                     readTextFile(cssPath, next);
                 }
@@ -348,47 +379,83 @@ function processCssBundle(options, cssBundle, bundleDir, cssFiles, bundleName, c
                 allCssArr[i] = css;
                 var withMin = function (minCss) {
                     allMinCssArr[i] = minCss;
+
                     if (! --pending) whenDone();
                 };
                 if (options.skipmin) {
                     withMin('');
-                } else {
-                    getOrCreateMinCss(css, cssPath, minCssPath, withMin);
+                } else if (/(\.min\.|\.pack\.)/.test(file) && options.skipremin) {
+                    readTextFile(cssPath, withMin);
+                }else {
+                    getOrCreateMinCss(options, css, cssPath, minCssPath, withMin);
                 }
             }
         );
-    });            
+    });
 }
 
-function getOrCreateJs(coffeeScript, csPath, jsPath, cb /*cb(js)*/) {
-    compileAsync("compiling", function (coffeeScript, csPath, cb) {
+function getOrCreateJs(options, coffeeScript, csPath, jsPath, cb /*cb(js)*/) {
+    compileAsync(options, "compiling", function (coffeeScript, csPath, cb) {
             cb(coffee.compile(coffeeScript));
         }, coffeeScript, csPath, jsPath, cb);
 }
 
-function getOrCreateMinJs(js, jsPath, minJsPath, cb /*cb(minJs)*/) {
-    compileAsync("minifying", function (js, jsPath, cb) {
+function getOrCreateJsLiveScript(options, livescriptText, lsPath, jsPath, cb /*cb(js)*/) {
+    compileAsync(options, "compiling", function (livescriptText, lsPath, cb) {
+            cb(livescript.compile(livescriptText));
+        }, livescriptText, lsPath, jsPath, cb);
+}
+
+function getOrCreateMinJs(options, js, jsPath, minJsPath, cb /*cb(minJs)*/) {
+    compileAsync(options, "minifying", function (js, jsPath, cb) {
         cb(minifyjs(js));
     }, js, jsPath, minJsPath, cb);
 }
 
-function getOrCreateLessCss(less, lessPath, cssPath, cb /*cb(css)*/) {
-    compileAsync("compiling", compileLess, less, lessPath, cssPath, cb);
+function getOrCreateLessCss(options, less, lessPath, cssPath, cb /*cb(css)*/) {
+    compileAsync(options, "compiling", compileLess, less, lessPath, cssPath, cb);
 }
 
-function getOrCreateSassCss(sassText, sassPath, cssPath, cb /*cb(sass)*/) {
-    compileAsync("compiling", function (sassText, sassPath, cb) {
-        cb(sass.render(removeCR(sassText), { options: path.basename(sassPath) }));
+function getOrCreateSassCss(options, sassText, sassPath, cssPath, cb /*cb(sass)*/) {
+    var explodedSassPath = sassPath.split('\\');
+
+    if (explodedSassPath.length == 0) {
+        explodedSassPath = sassPath.split('/');
+    }
+
+    var sassFileName = explodedSassPath.pop();
+    var includePaths = [sassPath.replace(sassFileName, '')];
+
+    compileAsync(options, "compiling", function (sassText, sassPath, cb) {
+        cb(sass.renderSync({
+            file: sassPath,
+            includePaths: includePaths
+        }));
     }, sassText, sassPath, cssPath, cb);
 }
 
-function getOrCreateMinCss(css, cssPath, minCssPath, cb /*cb(minCss)*/) {
-    compileAsync("minifying", function (css, cssPath, cb) {
+function getOrCreateStylusCss(options, stylusText, stylusPath, cssPath, cb /*cb(css)*/) {
+    compileAsync(options, "compiling", function (stylusText, stylusPath, cb) {
+        stylus(stylusText)
+			.set('filename', stylusPath)
+			.use(nib())
+			.render(function(err, css){
+				if(err){
+					throw new Error(err);
+				}
+
+				cb(css);
+			});
+    }, stylusText, stylusPath, cssPath, cb);
+}
+
+function getOrCreateMinCss(options, css, cssPath, minCssPath, cb /*cb(minCss)*/) {
+    compileAsync(options, "minifying", function (css, cssPath, cb) {
             cb(cleanCss.process(css));
         }, css, cssPath, minCssPath, cb);
 }
 
-function compileAsync(mode, compileFn /*compileFn(text, textPath, cb(compiledText))*/, 
+function compileAsync(options, mode, compileFn /*compileFn(text, textPath, cb(compiledText))*/,
     text, textPath, compileTextPath, cb /*cb(compiledText)*/) {
     Step(
         function () {
@@ -409,9 +476,13 @@ function compileAsync(mode, compileFn /*compileFn(text, textPath, cb(compiledTex
             if (doCompile) {
                 console.log(mode + " " + compileTextPath + "...");
                 var onAfterCompiled = function(minText) {
-                    fs.writeFile(compileTextPath, minText, 'utf-8', function(_) {
+                    if (options.outputbundleonly) {
                         cb(minText);
-                    });
+                    } else {
+                        fs.writeFile(compileTextPath, minText, 'utf-8', function(_) {
+                            cb(minText);
+                        });
+                    }
                 };
                 compileFn(text, textPath, onAfterCompiled);
             } else {
@@ -428,7 +499,7 @@ function compileLess(lessCss, lessPath, cb) {
             paths: ['.', lessDir], // Specify search paths for @import directives
             filename: fileName
         };
-    
+
     less.render(lessCss, options, function (err, css) {
         if (err) throw err;
         cb(css);
